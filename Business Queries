@@ -1,0 +1,51 @@
+-- Calculate SLA Breach % by Hour of Day to identify weak shifts
+SELECT 
+    HOUR(t.created_at) AS hour_of_day,
+    COUNT(t.ticket_id) AS total_tickets,
+    SUM(s.sla_breached) AS total_breaches,
+    ROUND((SUM(s.sla_breached) / COUNT(t.ticket_id)) * 100, 2) AS breach_percentage
+FROM tickets t
+JOIN sla_performance s ON t.ticket_id = s.ticket_id
+GROUP BY 1
+ORDER BY breach_percentage DESC;
+
+-- Identify 'Chronic' Systems: Running Total of Downtime & Financial Loss
+SELECT 
+    t.system,
+    COUNT(t.ticket_id) as incident_count,
+    SUM(s.uptime_impact_minutes) as total_downtime_mins,
+    SUM(b.estimated_financial_loss) as total_financial_loss,
+    -- Rank systems by financial impact
+    DENSE_RANK() OVER (ORDER BY SUM(b.estimated_financial_loss) DESC) as impact_rank
+FROM tickets t
+JOIN sla_performance s ON t.ticket_id = s.ticket_id
+LEFT JOIN business_impact b ON t.ticket_id = b.ticket_id
+GROUP BY t.system
+ORDER BY impact_rank ASC;
+
+-- Compare "Permanent Fix" rates between engineers
+WITH EngineerStats AS (
+    SELECT 
+        r.assigned_engineer,
+        COUNT(t.ticket_id) AS total_tickets,
+        AVG(s.resolution_hours) AS avg_resolution_time,
+        SUM(CASE 
+            WHEN r.fix_type = 'Permanent Fix' THEN 1 
+            ELSE 0 
+        END) AS permanent_fixes
+    FROM tickets t
+    LEFT JOIN root_cause r 
+        ON t.ticket_id = r.ticket_id
+    LEFT JOIN sla_performance s 
+        ON t.ticket_id = s.ticket_id
+    WHERE r.assigned_engineer IS NOT NULL
+    GROUP BY r.assigned_engineer
+)
+SELECT 
+    assigned_engineer,
+    total_tickets,
+    ROUND(avg_resolution_time, 1) AS avg_hours,
+    ROUND((permanent_fixes * 100.0 / total_tickets), 1) AS permanent_fix_rate
+FROM EngineerStats
+WHERE total_tickets >= 3
+ORDER BY permanent_fix_rate DESC;
